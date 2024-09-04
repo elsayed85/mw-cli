@@ -247,25 +247,46 @@ async function selectStreamAndCaption(streams, captions) {
       console.error(clc.red("No streams available."));
       return;
     }
-
     const { selectedStream } = await prompt([
       {
-        type: "list",
-        name: "selectedStream",
-        message: "Select a stream:",
-        choices: Object.keys(streams).map((quality) => ({
+      type: "list",
+      name: "selectedStream",
+      message: "Select a stream:",
+      choices: [
+        {
+        name: `720 (${streams["720"].type})`,
+        value: streams["720"].url,
+        },
+        ...Object.keys(streams)
+        .filter((quality) => quality !== "720")
+        .map((quality) => ({
           name: `${quality} (${streams[quality].type})`,
           value: streams[quality].url,
         })),
+      ],
       },
     ]);
 
     // Ensure captions is defined and is an array
+    // Ensure captions is defined and is an array
     const filteredCaptions = Array.isArray(captions)
       ? captions.filter(
-          (caption) => caption.language === "en" || caption.language === "ar"
+          (caption) =>
+            caption.language === "ar" && caption.opensubtitles === true
         )
       : [];
+
+    if (filteredCaptions.length === 0) {
+      console.error(clc.red("No captions available."));
+      await openInVLC(selectedStream);
+      return;
+    }
+
+    if (filteredCaptions.length === 1) {
+      await openInVLC(selectedStream, filteredCaptions[0].url);
+      return
+    }
+    
 
     const { selectedCaption } = await prompt([
       {
