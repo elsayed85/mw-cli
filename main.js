@@ -4,11 +4,29 @@ const MovieDB = require("node-themoviedb");
 const { exec } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-var clc = require("cli-color");
+const clc = require("cli-color");
 
 const tmdb = new MovieDB("89be02cb38d7d2d1f4322fd40d1504fa");
 const prompt = inquirer.createPromptModule();
 const projectDir = path.dirname(require.main.filename);
+
+async function fetchMediaDetails(id, media_type) {
+  try {
+    const [details, externalIds] = await Promise.all([
+      media_type === "tv"
+        ? tmdb.tv.getDetails({ pathParameters: { tv_id: id } })
+        : tmdb.movie.getDetails({ pathParameters: { movie_id: id } }),
+      media_type === "tv"
+        ? tmdb.tv.getExternalIDs({ pathParameters: { tv_id: id } })
+        : tmdb.movie.getExternalIDs({ pathParameters: { movie_id: id } }),
+    ]);
+
+    return { details: details.data, imdbId: externalIds.data.imdb_id };
+  } catch (error) {
+    console.error(clc.red("Failed to fetch media details:"), error.message);
+    throw error;
+  }
+}
 
 async function printMediaInfo(media) {
   console.log();
@@ -24,6 +42,7 @@ async function printMediaInfo(media) {
     console.log(clc.bold("Episode:"), media.episode.number);
     console.log(clc.bold("Episode Name:"), media.episode.name);
   }
+
   console.log();
 }
 
@@ -41,14 +60,9 @@ async function downloadSubtitle(subtitleUrl) {
     return tempFilePath;
   }
 
-  const writer = fs.createWriteStream(tempFilePath);
-
   try {
-    const response = await axios({
-      url: subtitleUrl,
-      method: "GET",
-      responseType: "stream",
-    });
+    const response = await axios.get(subtitleUrl, { responseType: "stream" });
+    const writer = fs.createWriteStream(tempFilePath);
 
     response.data.pipe(writer);
 
@@ -77,11 +91,9 @@ async function openInVLC(videoUrl, subtitleUrl = null) {
     }
   }
 
-  let command = `vlc "${videoUrl}"`;
-
-  if (subtitlePath) {
-    command += ` --sub-file="${subtitlePath}"`;
-  }
+  const command = subtitlePath
+    ? `vlc "${videoUrl}" --sub-file="${subtitlePath}"`
+    : `vlc "${videoUrl}"`;
 
   exec(command, (error, stdout, stderr) => {
     if (error) {
@@ -98,11 +110,8 @@ async function openInVLC(videoUrl, subtitleUrl = null) {
 async function getTvSeasonsAndEpisodes(tmdb_id) {
   try {
     const response = await tmdb.tv.getDetails({
-      pathParameters: {
-        tv_id: tmdb_id,
-      },
+      pathParameters: { tv_id: tmdb_id },
     });
-
     const seasons = response.data.seasons
       .filter((season) => season.season_number !== 0)
       .map((season) => ({
@@ -154,7 +163,10 @@ async function getTvSeasonsAndEpisodes(tmdb_id) {
 
     return { season, episode };
   } catch (error) {
-    console.error(clc.red("Failed to get TV seasons and episodes:"), error.message);
+    console.error(
+      clc.red("Failed to get TV seasons and episodes:"),
+      error.message
+    );
     throw error;
   }
 }
@@ -169,12 +181,7 @@ async function searchTitle() {
       },
     ]);
 
-    const searchResults = await tmdb.search.multi({
-      query: {
-        query: title,
-      },
-    });
-
+    const searchResults = await tmdb.search.multi({ query: { query: title } });
     const choices = searchResults.data.results
       .filter((result) => result.media_type !== "person") // Exclude persons (actors)
       .map((result) => ({
@@ -203,41 +210,20 @@ async function searchTitle() {
       },
     ]);
 
-    return searchResults.data.results.find((movie) => movie.id === selectedMovie);
+    return searchResults.data.results.find(
+      (movie) => movie.id === selectedMovie
+    );
   } catch (error) {
     console.error(clc.red("Failed to search for title:"), error.message);
     throw error;
   }
 }
 
-async function getIMDBId(id, media_type) {
-  try {
-    if (media_type === "tv") {
-      const response = await tmdb.tv.getExternalIDs({
-        pathParameters: {
-          tv_id: id,
-        },
-      });
-      return response.data.imdb_id;
-    } else {
-      const response = await tmdb.movie.getExternalIDs({
-        pathParameters: {
-          movie_id: id,
-        },
-      });
-      return response.data.imdb_id;
-    }
-  } catch (error) {
-    console.error(clc.red("Failed to get IMDb ID:"), error.message);
-    throw error;
-  }
-}
-
 async function getStreams(imdbId, season = null, episode = null) {
-  let apiUrl = `http://localhost:8657/${imdbId}`;
-  if (season && episode) {
-    apiUrl += `/${season}/${episode}`;
-  }
+  const apiUrl =
+    season && episode
+      ? `http://localhost:8657/${imdbId}/${season}/${episode}`
+      : `http://localhost:8657/${imdbId}`;
 
   try {
     const response = await axios.get(apiUrl);
@@ -245,7 +231,10 @@ async function getStreams(imdbId, season = null, episode = null) {
       console.error(clc.red("No streams found for this content."));
       return { stream: { qualities: {}, captions: [] }, media: {} };
     }
-    return response.data;
+    return {
+      stream: response.data.stream,
+      media: response.data.media,
+    };
   } catch (error) {
     console.error(clc.red("Failed to get streams:"), error.message);
     throw error;
@@ -257,10 +246,6 @@ async function selectStreamAndCaption(streams, captions) {
     if (!streams || Object.keys(streams).length === 0) {
       console.error(clc.red("No streams available."));
       return;
-    }
-
-    if (!captions || captions.length === 0) {
-      console.error(clc.red("No captions available."));
     }
 
     const { selectedStream } = await prompt([
@@ -275,27 +260,33 @@ async function selectStreamAndCaption(streams, captions) {
       },
     ]);
 
+    // Ensure captions is defined and is an array
+    const filteredCaptions = Array.isArray(captions)
+      ? captions.filter(
+          (caption) => caption.language === "en" || caption.language === "ar"
+        )
+      : [];
+
     const { selectedCaption } = await prompt([
       {
         type: "list",
         name: "selectedCaption",
         message: "Select a caption:",
-        choices: captions
-          .filter(
-            (caption) => caption.language === "en" || caption.language === "ar"
-          )
-          .map((caption) => ({
-            name: `${caption.language} (${caption.type}) ${
-              caption.opensubtitles ? "opensubtitles" : ""
-            }`,
-            value: caption.url,
-          })),
+        choices: filteredCaptions.map((caption) => ({
+          name: `${caption.language} (${caption.type}) ${
+            caption.opensubtitles ? "opensubtitles" : ""
+          }`,
+          value: caption.url,
+        })),
       },
     ]);
 
     await openInVLC(selectedStream, selectedCaption);
   } catch (error) {
-    console.error(clc.red("Failed to select stream or caption:"), error.message);
+    console.error(
+      clc.red("Failed to select stream or caption:"),
+      error.message
+    );
   }
 }
 
@@ -304,27 +295,40 @@ async function main() {
     const selectedMovie = await searchTitle();
     if (!selectedMovie) return;
 
-    const imdbId = await getIMDBId(selectedMovie.id, selectedMovie.media_type);
+    const { details, imdbId } = await fetchMediaDetails(
+      selectedMovie.id,
+      selectedMovie.media_type
+    );
 
-    let streams, captions, media;
+    const mediaInfo = {
+      type: selectedMovie.media_type,
+      title: details.title || details.name,
+      releaseYear: details.release_date
+        ? details.release_date.split("-")[0]
+        : details.first_air_date
+        ? details.first_air_date.split("-")[0]
+        : "N/A",
+    };
 
     if (selectedMovie.media_type === "tv") {
-      const { season, episode } = await getTvSeasonsAndEpisodes(selectedMovie.id);
-      if (!season || !episode) return;
-
-      const response = await getStreams(imdbId, season, episode);
-      streams = response.stream.qualities;
-      captions = response.stream.captions;
-      media = response.media;
-    } else {
-      const response = await getStreams(imdbId);
-      streams = response.stream.qualities;
-      captions = response.stream.captions;
-      media = response.media;
+      const { season, episode } = await getTvSeasonsAndEpisodes(
+        selectedMovie.id
+      );
+      mediaInfo.season = {
+        number: season,
+        episode: { number: episode, name: "" },
+      }; // Update with correct season and episode
     }
 
-    await printMediaInfo(media);
-    await selectStreamAndCaption(streams, captions);
+    await printMediaInfo(mediaInfo);
+
+    const { stream, media } = await getStreams(
+      imdbId,
+      mediaInfo.season ? mediaInfo.season.number : null,
+      mediaInfo.season ? mediaInfo.season.episode.number : null
+    );
+
+    await selectStreamAndCaption(stream.qualities, stream.captions);
   } catch (error) {
     console.error(clc.red("An error occurred:"), error.message);
   }
