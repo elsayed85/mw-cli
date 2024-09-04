@@ -5,7 +5,7 @@
 
 
 ``` bash
-sayed@sayed:~/projects/transaltion$ node main.js
+sayed@sayed:~/projects/mw-cli$ node main.js
 ? Enter the title to search: Prison Break
 ? Select a title: Prison Break (2005)
 ? Select season number (or type to select): Season 1
