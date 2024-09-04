@@ -4,8 +4,7 @@ const MovieDB = require("node-themoviedb");
 const { exec } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
-const { dir } = require("console");
+var clc = require("cli-color");
 
 const tmdb = new MovieDB("89be02cb38d7d2d1f4322fd40d1504fa");
 
@@ -13,15 +12,37 @@ const prompt = inquirer.createPromptModule();
 
 const projectDir = path.dirname(require.main.filename);
 
+async function printMediaInfo(media) {
+  console.log();
+  console.log(clc.bold("Media Info:"));
+  console.log(clc.bold("Type:"), clc.red(media.type));
+  console.log(clc.bold("Title:"), clc.green(media.title));
+  console.log(clc.bold("Release Year:"), media.releaseYear);
+
+  if (media.season) {
+    console.log(clc.bold("Season:"), media.season.number);
+  }
+  if (media.episode) {
+    console.log(clc.bold("Episode:"), media.episode.number);
+    console.log(clc.bold("Episode Name:"), media.episode.name);
+  }
+  console.log();
+}
+
 async function downloadSubtitle(subtitleUrl) {
   const tempDir = path.join(projectDir, "vlc-subtitles");
+
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir);
   }
 
   filename = subtitleUrl.split("/").pop();
   const tempFilePath = path.join(tempDir, filename);
-  
+
+  if (fs.existsSync(tempFilePath) && fs.statSync(tempFilePath).size > 0) {
+    return tempFilePath;
+  }
+
   const writer = fs.createWriteStream(tempFilePath);
 
   const response = await axios({
@@ -67,6 +88,55 @@ async function openInVLC(videoUrl, subtitleUrl = null) {
     }
     console.log(`VLC output: ${stdout}`);
   });
+}
+
+async function getTvSeasonsAndEpisodes(tmdb_id) {
+  const response = await tmdb.tv.getDetails({
+    pathParameters: {
+      tv_id: tmdb_id,
+    },
+  });
+
+  const seasons = response.data.seasons
+  .filter((season) => season.season_number !== 0)
+  .map((season) => ({
+    name: `Season ${season.season_number}`,
+    value: season.season_number,
+  }));
+
+  const { season } = await prompt([
+    {
+      type: "list",
+      name: "season",
+      message: "Select season number (or type to select):",
+      choices: seasons,
+      filter: (input) => parseInt(input),
+    },
+  ]);
+
+  const seasonDetails = await tmdb.tv.season.getDetails({
+    pathParameters: {
+      tv_id: tmdb_id,
+      season_number: season,
+    },
+  });
+
+  const episodes = seasonDetails.data.episodes.map((episode) => ({
+    name: `Episode ${episode.episode_number} - ${episode.name}`,
+    value: episode.episode_number,
+  }));
+
+  const { episode } = await prompt([
+    {
+      type: "list",
+      name: "episode",
+      message: "Select episode number (or type to select):",
+      choices: episodes,
+      filter: (input) => parseInt(input),
+    },
+  ]);
+
+  return { season, episode };
 }
 
 async function searchTitle() {
@@ -156,15 +226,19 @@ async function selectStreamAndCaption(streams, captions) {
       type: "list",
       name: "selectedCaption",
       message: "Select a caption:",
-      choices: captions.map((caption) => ({
-        name: `${caption.language} (${caption.type})`,
-        value: caption.url,
-      })),
+      choices: captions
+        .filter(
+          (caption) => caption.language === "en" || caption.language === "ar"
+        )
+        .map((caption) => ({
+          // if opensubtitles key is present, use it as the caption name
+          name: `${caption.language} (${caption.type}) ${
+            caption.opensubtitles ? "opensubtitles" : ""
+          }`,
+          value: caption.url,
+        })),
     },
   ]);
-
-  console.log(`Selected stream: ${selectedStream}`);
-  console.log(`Selected caption: ${selectedCaption}`);
 
   await openInVLC(selectedStream, selectedCaption);
 }
@@ -175,46 +249,23 @@ async function main() {
 
   let streams, captions;
 
+  console.log(selectedMovie);
+
   if (selectedMovie.media_type === "tv") {
-    const seasons = Array.from({ length: 10 }, (_, i) => i + 1).map((num) => ({
-      name: `Season ${num}`,
-      value: num,
-    }));
-
-    const { season } = await prompt([
-      {
-        type: "list",
-        name: "season",
-        message: "Select season number (or type to select):",
-        choices: seasons,
-        filter: (input) => parseInt(input),
-      },
-    ]);
-
-    const episodes = Array.from({ length: 20 }, (_, i) => i + 1).map((num) => ({
-      name: `Episode ${num}`,
-      value: num,
-    }));
-
-    const { episode } = await prompt([
-      {
-        type: "list",
-        name: "episode",
-        message: "Select episode number (or type to select):",
-        choices: episodes,
-        filter: (input) => parseInt(input),
-      },
-    ]);
+    const { season, episode } = await getTvSeasonsAndEpisodes(selectedMovie.id);
 
     const response = await getStreams(imdbId, season, episode);
     streams = response.stream.qualities;
     captions = response.stream.captions;
+    media = response.media;
   } else {
     const response = await getStreams(imdbId);
     streams = response.stream.qualities;
     captions = response.stream.captions;
+    media = response.media;
   }
 
+  await printMediaInfo(media);
   await selectStreamAndCaption(streams, captions);
 }
 
