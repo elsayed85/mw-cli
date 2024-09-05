@@ -1,3 +1,4 @@
 node_modules/
 vlc-subtitles/*
 progress.json
+package-lock.json
