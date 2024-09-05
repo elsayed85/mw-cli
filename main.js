@@ -83,8 +83,32 @@ async function downloadSubtitle(subtitleUrl) {
   }
 }
 
+async function getVlcPathBasedOnOS() {
+  const isWindows = process.platform === "win32";
+  const isMac = process.platform === "darwin";
+  const isLinux = process.platform === "linux";
+
+  if (isWindows) {
+    return "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe";
+  } else if (isMac) {
+    return "/Applications/VLC.app/Contents/MacOS/VLC";
+  } else if (isLinux) {
+    return "vlc";
+  } else {
+    throw new Error("Unsupported operating system.");
+  }
+}
+
 async function openInVLC(videoUrl, subtitleUrl = null) {
   let subtitlePath = null;
+  let vlcPath = null;
+
+  try {
+    vlcPath = await getVlcPathBasedOnOS();
+  } catch (error) {
+    console.error(clc.red("Failed to get VLC path:"), error.message);
+    return;
+  }
 
   if (subtitleUrl) {
     try {
@@ -95,9 +119,7 @@ async function openInVLC(videoUrl, subtitleUrl = null) {
     }
   }
 
-  const command = subtitlePath
-    ? `vlc "${videoUrl}" --sub-file="${subtitlePath}"`
-    : `vlc "${videoUrl}"`;
+  const command = subtitlePath ? `"${vlcPath}" "${videoUrl}" --sub-file="${subtitlePath}"` : `"${vlcPath}" "${videoUrl}"`;
 
   exec(command, (error, stdout, stderr) => {
     if (error) {
