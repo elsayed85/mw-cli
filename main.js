@@ -7,7 +7,11 @@ const path = require("path");
 const clc = require("cli-color");
 
 const tmdb = new MovieDB("89be02cb38d7d2d1f4322fd40d1504fa");
-const prompt = inquirer.createPromptModule();
+
+const prompt = inquirer
+  .createPromptModule()
+  .registerPrompt("suggest", require("inquirer-prompt-suggest"));
+
 const projectDir = path.dirname(require.main.filename);
 
 async function fetchMediaDetails(id, media_type) {
@@ -173,11 +177,14 @@ async function getTvSeasonsAndEpisodes(tmdb_id) {
 
 async function searchTitle() {
   try {
+    progress = await getProgress();
+    const suggestions = Object.keys(progress).map((key) => progress[key].title);
     const { title } = await prompt([
       {
-        type: "input",
+        type: "suggest",
         name: "title",
         message: "Enter the title to search:",
+        suggestions: suggestions,
       },
     ]);
 
@@ -249,31 +256,28 @@ async function selectStreamAndCaption(streams, captions) {
     }
     const { selectedStream } = await prompt([
       {
-      type: "list",
-      name: "selectedStream",
-      message: "Select a stream:",
-      choices: [
-        {
-        name: `720 (${streams["720"].type})`,
-        value: streams["720"].url,
-        },
-        ...Object.keys(streams)
-        .filter((quality) => quality !== "720")
-        .map((quality) => ({
-          name: `${quality} (${streams[quality].type})`,
-          value: streams[quality].url,
-        })),
-      ],
+        type: "list",
+        name: "selectedStream",
+        message: "Select a stream:",
+        choices: [
+          {
+            name: `720 (${streams["720"].type})`,
+            value: streams["720"].url,
+          },
+          ...Object.keys(streams)
+            .filter((quality) => quality !== "720")
+            .map((quality) => ({
+              name: `${quality} (${streams[quality].type})`,
+              value: streams[quality].url,
+            })),
+        ],
       },
     ]);
 
     // Ensure captions is defined and is an array
     // Ensure captions is defined and is an array
     const filteredCaptions = Array.isArray(captions)
-      ? captions.filter(
-          (caption) =>
-            caption.language === "ar" && caption.opensubtitles === true
-        )
+      ? captions.filter((caption) => caption.language === "ar")
       : [];
 
     if (filteredCaptions.length === 0) {
@@ -284,9 +288,8 @@ async function selectStreamAndCaption(streams, captions) {
 
     if (filteredCaptions.length === 1) {
       await openInVLC(selectedStream, filteredCaptions[0].url);
-      return
+      return;
     }
-    
 
     const { selectedCaption } = await prompt([
       {
@@ -311,7 +314,75 @@ async function selectStreamAndCaption(streams, captions) {
   }
 }
 
+async function saveProgress(mediaInfo) {
+  const filePath = path.join(projectDir, "progress.json");
+  let progress = {};
+
+  if (fs.existsSync(filePath)) {
+    progress = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  }
+
+  timeNow = new Date();
+  mediaInfo.time = timeNow.toISOString();
+  progress[mediaInfo.id] = mediaInfo;
+
+  fs.writeFileSync(filePath, JSON.stringify(progress, null, 2));
+}
+
+async function getProgress() {
+  const filePath = path.join(projectDir, "progress.json");
+  let progress = {};
+
+  if (fs.existsSync(filePath)) {
+    progress = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  }
+
+  progress = Object.fromEntries(
+    Object.entries(progress).sort(([, a], [, b]) => {
+      return new Date(b.time) - new Date(a.time);
+    })
+  );
+
+  return progress;
+}
+
+async function showLatestProgress() {
+  const progress = await getProgress();
+
+  if (Object.keys(progress).length > 0) {
+    console.log(clc.bold("Latest Progress:"));
+  }
+
+  // latest movies
+  Object.keys(progress).forEach((key) => {
+    const media = progress[key];
+    console.log();
+
+    const time = new Date(media.time);
+    // time Y-m-d H:i:s
+    time_string =
+      time.toISOString().split("T")[0] +
+      " " +
+      time.toTimeString().split(" ")[0];
+    title =
+      clc.green(clc.underline(media.title)) + " (" + media.releaseYear + ")";
+    if (media.season) {
+      title += " - Season " + media.season.number;
+
+      if (media.season.episode) {
+        ep = media.season.episode;
+        title += " Episode " + ep.number + (ep.name ? " - " + ep.name : "");
+      }
+    }
+
+    console.log(clc.bold(clc.blue(time_string)), title);
+
+    console.log();
+  });
+}
+
 async function main() {
+  await showLatestProgress();
   try {
     const selectedMovie = await searchTitle();
     if (!selectedMovie) return;
@@ -322,6 +393,7 @@ async function main() {
     );
 
     const mediaInfo = {
+      id: selectedMovie.id,
       type: selectedMovie.media_type,
       title: details.title || details.name,
       releaseYear: details.release_date
@@ -337,10 +409,11 @@ async function main() {
       );
       mediaInfo.season = {
         number: season,
-        episode: { number: episode, name: "" },
+        episode: { number: episode, name: null },
       }; // Update with correct season and episode
     }
 
+    await saveProgress(mediaInfo);
     await printMediaInfo(mediaInfo);
 
     const { stream, media } = await getStreams(
