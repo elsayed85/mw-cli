@@ -5,6 +5,7 @@ const { exec } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const clc = require("cli-color");
+const { get } = require("http");
 
 const tmdb = new MovieDB("89be02cb38d7d2d1f4322fd40d1504fa");
 
@@ -119,7 +120,9 @@ async function openInVLC(videoUrl, subtitleUrl = null) {
     }
   }
 
-  const command = subtitlePath ? `"${vlcPath}" "${videoUrl}" --sub-file="${subtitlePath}"` : `"${vlcPath}" "${videoUrl}"`;
+  const command = subtitlePath
+    ? `"${vlcPath}" "${videoUrl}" --sub-file="${subtitlePath}"`
+    : `"${vlcPath}" "${videoUrl}"`;
 
   exec(command, (error, stdout, stderr) => {
     if (error) {
@@ -133,7 +136,29 @@ async function openInVLC(videoUrl, subtitleUrl = null) {
   });
 }
 
-async function getTvSeasonsAndEpisodes(tmdb_id) {
+// function to return the latest progress of serie season number and episode number
+async function getTheNextSeasonAndEpisode(serie_id, progress) {
+  serieProgress = Object.keys(progress).filter(
+    (key) => progress[key].id == serie_id
+  );
+
+  if (serieProgress.length == 0) {
+    return { season: 1, episode: 1 };
+  }
+
+  serieProgress = progress[serieProgress[0]];
+
+  if (serieProgress.season) {
+    return {
+      season: serieProgress.season.number,
+      episode: serieProgress.season.episode.number,
+    };
+  }
+
+  return { season: 1, episode: 1 };
+}
+
+async function getTvSeasonsAndEpisodes(tmdb_id = null, progress) {
   try {
     const response = await tmdb.tv.getDetails({
       pathParameters: { tv_id: tmdb_id },
@@ -150,12 +175,18 @@ async function getTvSeasonsAndEpisodes(tmdb_id) {
       return;
     }
 
+    defaultSeason = 1;
+    if (progress.season) {
+      defaultSeason = progress.season;
+    }
+
     const { season } = await prompt([
       {
         type: "list",
         name: "season",
         message: "Select season number (or type to select):",
         choices: seasons,
+        default: defaultSeason,
         filter: (input) => parseInt(input),
       },
     ]);
@@ -177,12 +208,20 @@ async function getTvSeasonsAndEpisodes(tmdb_id) {
       return;
     }
 
+    // set current episode selected from progress
+    // progress contains {season : number , episode : number}
+    defaultEpisode = 1;
+    if (progress.season && progress.episode) {
+      defaultEpisode = progress.episode;
+    }
+
     const { episode } = await prompt([
       {
         type: "list",
         name: "episode",
         message: "Select episode number (or type to select):",
         choices: episodes,
+        default: defaultEpisode,
         filter: (input) => parseInt(input),
       },
     ]);
@@ -197,10 +236,8 @@ async function getTvSeasonsAndEpisodes(tmdb_id) {
   }
 }
 
-async function searchTitle() {
+async function searchTitle(suggestions) {
   try {
-    progress = await getProgress();
-    const suggestions = Object.keys(progress).map((key) => progress[key].title);
     const { title } = await prompt([
       {
         type: "suggest",
@@ -209,6 +246,12 @@ async function searchTitle() {
         suggestions: suggestions,
       },
     ]);
+
+    suggestProgressId = Object.keys(progress).filter(
+      (key) => progress[key].title === title
+    )[0];
+
+    suggest = progress[suggestProgressId];
 
     const searchResults = await tmdb.search.multi({ query: { query: title } });
     const choices = searchResults.data.results
@@ -276,23 +319,30 @@ async function selectStreamAndCaption(streams, captions) {
       console.error(clc.red("No streams available."));
       return;
     }
+    let choices = [];
+
+    if (streams["720"]) {
+      choices.push({
+        name: `720 (${streams["720"].type})`,
+        value: streams["720"].url,
+      });
+    }
+
+    choices.push(
+      ...Object.keys(streams)
+        .filter((quality) => quality !== "720")
+        .map((quality) => ({
+          name: `${quality} (${streams[quality].type})`,
+          value: streams[quality].url,
+        }))
+    );
+
     const { selectedStream } = await prompt([
       {
         type: "list",
         name: "selectedStream",
         message: "Select a stream:",
-        choices: [
-          {
-            name: `720 (${streams["720"].type})`,
-            value: streams["720"].url,
-          },
-          ...Object.keys(streams)
-            .filter((quality) => quality !== "720")
-            .map((quality) => ({
-              name: `${quality} (${streams[quality].type})`,
-              value: streams[quality].url,
-            })),
-        ],
+        choices,
       },
     ]);
 
@@ -331,7 +381,8 @@ async function selectStreamAndCaption(streams, captions) {
   } catch (error) {
     console.error(
       clc.red("Failed to select stream or caption:"),
-      error.message
+      // trace
+      error.stack
     );
   }
 }
@@ -401,12 +452,15 @@ async function showLatestProgress() {
 
     console.log();
   });
+  return progress;
 }
 
 async function main() {
-  await showLatestProgress();
+  progress = await showLatestProgress();
   try {
-    const selectedMovie = await searchTitle();
+    const suggestions =
+      Object.keys(progress).map((key) => progress[key].title) || [];
+    const selectedMovie = await searchTitle(suggestions);
     if (!selectedMovie) return;
 
     const { details, imdbId } = await fetchMediaDetails(
@@ -427,7 +481,8 @@ async function main() {
 
     if (selectedMovie.media_type === "tv") {
       const { season, episode } = await getTvSeasonsAndEpisodes(
-        selectedMovie.id
+        selectedMovie.id,
+        await getTheNextSeasonAndEpisode(selectedMovie.id, progress)
       );
       mediaInfo.season = {
         number: season,
